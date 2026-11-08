@@ -11,6 +11,11 @@ pub trait TilingDirectionGetters: CommonGetters {
 
   fn set_tiling_direction(&self, tiling_direction: TilingDirection);
 
+  /// Whether children are stacked on top of each other instead of split.
+  fn is_accordion(&self) -> bool;
+
+  fn set_accordion(&self, is_accordion: bool);
+
   /// Traverses down a container in search of a descendant in the given
   /// direction. For example, for `Direction::Right`, get the right-most
   /// container.
@@ -66,6 +71,14 @@ macro_rules! impl_tiling_direction_getters {
 
       fn set_tiling_direction(&self, tiling_direction: TilingDirection) {
         self.0.borrow_mut().tiling_direction = tiling_direction;
+      }
+
+      fn is_accordion(&self) -> bool {
+        self.0.borrow().is_accordion
+      }
+
+      fn set_accordion(&self, is_accordion: bool) {
+        self.0.borrow_mut().is_accordion = is_accordion;
       }
     }
   };

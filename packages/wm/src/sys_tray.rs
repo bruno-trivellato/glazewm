@@ -25,6 +25,7 @@ pub enum TrayMenuId {
   FocusWorkspace(String),
   FocusWindow(Uuid),
   ToggleWorkspaceTilingDirection(Uuid),
+  ToggleWorkspaceAccordion(Uuid),
   ReloadConfig,
   ShowConfigFolder,
   #[cfg(target_os = "windows")]
@@ -42,6 +43,9 @@ impl Display for TrayMenuId {
       TrayMenuId::FocusWindow(id) => write!(f, "focus_window:{id}"),
       TrayMenuId::ToggleWorkspaceTilingDirection(id) => {
         write!(f, "toggle_workspace_tiling_direction:{id}")
+      }
+      TrayMenuId::ToggleWorkspaceAccordion(id) => {
+        write!(f, "toggle_workspace_accordion:{id}")
       }
       TrayMenuId::ReloadConfig => write!(f, "reload_config"),
       TrayMenuId::ShowConfigFolder => write!(f, "show_config_folder"),
@@ -65,6 +69,9 @@ impl FromStr for TrayMenuId {
         "focus_window" => Ok(Self::FocusWindow(Uuid::parse_str(value)?)),
         "toggle_workspace_tiling_direction" => {
           Ok(Self::ToggleWorkspaceTilingDirection(Uuid::parse_str(value)?))
+        }
+        "toggle_workspace_accordion" => {
+          Ok(Self::ToggleWorkspaceAccordion(Uuid::parse_str(value)?))
         }
         _ => anyhow::bail!("Invalid tray menu event: {}", event),
       };
@@ -317,6 +324,13 @@ impl SystemTray {
       TrayMenuId::ToggleWorkspaceTilingDirection(workspace_id) => {
         command_tx.send(TrayCommand {
           commands: vec![InvokeCommand::ToggleTilingDirection],
+          subject_container_id: Some(*workspace_id),
+        })?;
+        Ok(())
+      }
+      TrayMenuId::ToggleWorkspaceAccordion(workspace_id) => {
+        command_tx.send(TrayCommand {
+          commands: vec![InvokeCommand::ToggleAccordion],
           subject_container_id: Some(*workspace_id),
         })?;
         Ok(())

@@ -18,7 +18,7 @@ use crate::{
   commands::{
     container::{
       focus_container_by_id, focus_in_direction, set_tiling_direction,
-      toggle_tiling_direction,
+      toggle_accordion, toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -734,6 +734,9 @@ impl WindowManager {
       }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)
+      }
+      InvokeCommand::ToggleAccordion => {
+        toggle_accordion(subject_container, state)
       }
       InvokeCommand::SetTilingDirection { tiling_direction } => {
         set_tiling_direction(

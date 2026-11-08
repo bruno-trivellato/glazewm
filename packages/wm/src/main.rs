@@ -214,6 +214,7 @@ async fn start_wm(
       },
       Some(event) = keybinding_listener.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
+        tray_workspaces_outdated = true;
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       }
       _ = cleanup_interval.tick() => {
@@ -281,6 +282,7 @@ async fn start_wm(
         Ok(())
       },
       Some(tray_command) = tray.command_rx.recv() => {
+        tray_workspaces_outdated = true;
         wm.process_commands(
           &tray_command.commands,
           tray_command.subject_container_id,

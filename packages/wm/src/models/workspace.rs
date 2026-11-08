@@ -32,6 +32,7 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  is_accordion: bool,
 }
 
 impl Workspace {
@@ -48,6 +49,7 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      is_accordion: false,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -173,6 +175,7 @@ impl Workspace {
       x: rect.x(),
       y: rect.y(),
       tiling_direction: self.tiling_direction(),
+      is_accordion: self.is_accordion(),
     }))
   }
 }

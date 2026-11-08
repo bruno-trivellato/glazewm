@@ -39,6 +39,17 @@ fn build_workspace_submenu(
     None,
   ))?;
 
+  submenu.append(&MenuItem::with_id(
+    TrayMenuId::ToggleWorkspaceAccordion(workspace.id),
+    if workspace.is_accordion {
+      "Switch to tiles"
+    } else {
+      "Switch to accordion"
+    },
+    true,
+    None,
+  ))?;
+
   submenu.append(&PredefinedMenuItem::separator())?;
 
   let mut container_items = Vec::new();
@@ -78,7 +89,7 @@ fn collect_container_items(
         items.push(MenuItem::new(
           format!(
             "{indent}{} group",
-            direction_name(&split.tiling_direction)
+            layout_name(&split.tiling_direction, split.is_accordion)
           ),
           false,
           None,
@@ -99,7 +110,7 @@ fn workspace_label(workspace: &WorkspaceDto) -> String {
 
   format!(
     "{focus_marker}{name}  ·  {}  ·  {window_count} {}",
-    direction_name(&workspace.tiling_direction),
+    layout_name(&workspace.tiling_direction, workspace.is_accordion),
     if window_count == 1 { "window" } else { "windows" }
   )
 }
@@ -132,6 +143,17 @@ fn direction_name(direction: &TilingDirection) -> &'static str {
   match direction {
     TilingDirection::Horizontal => "horizontal",
     TilingDirection::Vertical => "vertical",
+  }
+}
+
+fn layout_name(
+  direction: &TilingDirection,
+  is_accordion: bool,
+) -> String {
+  if is_accordion {
+    format!("{} accordion", direction_name(direction))
+  } else {
+    direction_name(direction).to_string()
   }
 }
 
