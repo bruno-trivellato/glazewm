@@ -21,7 +21,7 @@ use tracing_subscriber::{
   layer::SubscriberExt,
 };
 use wm_common::{
-  AppCommand, ContainerDto, InvokeCommand, Verbosity, WmEvent,
+  AppCommand, ContainerDto, InvokeCommand, Verbosity, WmEvent, WorkspaceDto,
 };
 #[cfg(target_os = "macos")]
 use wm_platform::DispatcherExtMacOs;
@@ -32,7 +32,9 @@ use wm_platform::{
 };
 
 use crate::{
-  ipc_server::IpcServer, sys_tray::SystemTray, user_config::UserConfig,
+  ipc_server::IpcServer,
+  session::{restore_session, SessionStore},
+  sys_tray::SystemTray, user_config::UserConfig,
   wm::WindowManager,
 };
 
@@ -41,6 +43,7 @@ mod events;
 mod ipc_server;
 mod models;
 mod pending_sync;
+mod session;
 mod sys_tray;
 mod tray_badge;
 mod tray_workspace_menu;
@@ -180,6 +183,13 @@ async fn start_wm(
     dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
   }
 
+  let mut session_store = SessionStore::new(&config.path);
+  if let Some(session) = session_store.load() {
+    if let Err(err) = restore_session(&session, &mut wm, &mut config) {
+      tracing::warn!("Failed to restore session: {:?}", err);
+    }
+  }
+
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
 
@@ -300,7 +310,13 @@ async fn start_wm(
             _ => anyhow::bail!("Expected a workspace DTO."),
           })
           .try_collect()
-          .and_then(|workspaces| tray.update_workspaces(workspaces))
+          .and_then(|workspaces: Vec<WorkspaceDto>| {
+            if let Err(err) = session_store.save(&workspaces) {
+              tracing::warn!("Failed to save session: {:?}", err);
+            }
+
+            tray.update_workspaces(workspaces)
+          })
       },
       Some(()) = tray.config_reload_rx.recv() => {
         wm.process_commands(
