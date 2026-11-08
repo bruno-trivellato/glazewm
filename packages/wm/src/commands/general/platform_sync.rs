@@ -29,7 +29,10 @@ pub fn platform_sync(
 
   if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)?;
-    queue_accordion_ancestors_to_redraw(&focused_container, state);
+    queue_redraw_of_accordions_whose_offsets_follow_focus(
+      &focused_container,
+      state,
+    );
   }
 
   if !state.pending_sync.containers_to_redraw().is_empty()
@@ -81,9 +84,7 @@ pub fn platform_sync(
   Ok(())
 }
 
-/// Accordion children are offset around the focused child, so they need
-/// a redraw whenever focus moves within them.
-fn queue_accordion_ancestors_to_redraw(
+fn queue_redraw_of_accordions_whose_offsets_follow_focus(
   focused_container: &Container,
   state: &mut WmState,
 ) {

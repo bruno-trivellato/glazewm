@@ -11,7 +11,6 @@ pub trait TilingDirectionGetters: CommonGetters {
 
   fn set_tiling_direction(&self, tiling_direction: TilingDirection);
 
-  /// Whether children are stacked on top of each other instead of split.
   fn is_accordion(&self) -> bool;
 
   fn set_accordion(&self, is_accordion: bool);

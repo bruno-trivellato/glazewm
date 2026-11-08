@@ -14,14 +14,15 @@ use tray_icon::{
   Icon, TrayIcon, TrayIconBuilder,
 };
 use uuid::Uuid;
-use wm_common::{InvokeCommand, InvokeFocusCommand, WorkspaceDto};
+use wm_common::{InvokeCommand, WorkspaceDto};
 #[cfg(target_os = "windows")]
 use wm_platform::DispatcherExtWindows;
 use wm_platform::{Dispatcher, ThreadBound};
 
 use crate::{
-  tray_badge::render_badged_icon,
-  tray_workspace_menu::build_workspace_submenus,
+  tray_badge::render_icon_with_workspace_badge,
+  tray_workspace_menu::{insert_workspace_section, remove_workspace_section},
+  wm_command_builders::{focus_window, focus_workspace},
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -93,9 +94,7 @@ impl FromStr for TrayMenuId {
   }
 }
 
-/// WM commands requested from the tray menu, run against an optional
-/// subject container.
-pub struct TrayCommand {
+pub struct TrayMenuRequest {
   pub commands: Vec<InvokeCommand>,
   pub subject_container_id: Option<Uuid>,
 }
@@ -103,13 +102,13 @@ pub struct TrayCommand {
 pub struct SystemTray {
   pub config_reload_rx: mpsc::UnboundedReceiver<()>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
-  pub command_rx: mpsc::UnboundedReceiver<TrayCommand>,
+  pub menu_request_rx: mpsc::UnboundedReceiver<TrayMenuRequest>,
   _icon_thread: Option<std::thread::JoinHandle<()>>,
   tray_icon: ThreadBound<TrayIcon>,
   tray_menu: ThreadBound<Menu>,
-  workspace_item_count: usize,
-  base_icon: RgbaImage,
-  badge_label: Option<String>,
+  workspace_section_item_count: usize,
+  icon_without_badge: RgbaImage,
+  badged_workspace_name: Option<String>,
 }
 
 impl SystemTray {
@@ -120,7 +119,7 @@ impl SystemTray {
   ) -> anyhow::Result<Self> {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (config_reload_tx, config_reload_rx) = mpsc::unbounded_channel();
-    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let (menu_request_tx, menu_request_rx) = mpsc::unbounded_channel();
 
     let animations_enabled = Arc::new(Mutex::new({
       #[cfg(target_os = "windows")]
@@ -166,7 +165,7 @@ impl SystemTray {
             &config_path,
             &config_reload_tx,
             &exit_tx,
-            &command_tx,
+            &menu_request_tx,
             &animations_enabled,
             &run_on_startup_enabled,
           ) {
@@ -179,19 +178,17 @@ impl SystemTray {
     Ok(Self {
       config_reload_rx,
       exit_rx,
-      command_rx,
+      menu_request_rx,
       _icon_thread: Some(icon_thread),
       tray_icon,
       tray_menu,
-      workspace_item_count: 0,
-      base_icon: Self::decode_base_icon()?,
-      badge_label: None,
+      workspace_section_item_count: 0,
+      icon_without_badge: Self::decode_base_icon()?,
+      badged_workspace_name: None,
     })
   }
 
-  /// Replaces the workspace submenus at the top of the tray menu, and
-  /// badges the tray icon with the focused workspace.
-  pub fn update_workspaces(
+  pub fn show_workspaces(
     &mut self,
     workspaces: Vec<WorkspaceDto>,
   ) -> anyhow::Result<()> {
@@ -200,42 +197,39 @@ impl SystemTray {
       .find(|workspace| workspace.has_focus)
       .map(|workspace| workspace.name.clone());
 
-    if focused_workspace_name != self.badge_label {
-      self.update_badge(focused_workspace_name.as_deref())?;
-      self.badge_label = focused_workspace_name;
+    if focused_workspace_name != self.badged_workspace_name {
+      self.show_workspace_in_badge(focused_workspace_name.as_deref())?;
+      self.badged_workspace_name = focused_workspace_name;
     }
 
-    let previous_item_count = self.workspace_item_count;
+    self.replace_workspace_section(workspaces)
+  }
 
-    self.workspace_item_count = self.tray_menu.with(move |menu| {
-      for _ in 0..previous_item_count {
-        menu.remove_at(0);
-      }
+  fn replace_workspace_section(
+    &mut self,
+    workspaces: Vec<WorkspaceDto>,
+  ) -> anyhow::Result<()> {
+    let stale_item_count = self.workspace_section_item_count;
 
-      let submenus = build_workspace_submenus(&workspaces)?;
-      for (position, submenu) in submenus.iter().enumerate() {
-        menu.insert(submenu, position)?;
-      }
-
-      let separator_position = submenus.len();
-      if separator_position > 0 {
-        menu.insert(&PredefinedMenuItem::separator(), separator_position)?;
-        return anyhow::Ok(separator_position + 1);
-      }
-
-      anyhow::Ok(0)
+    self.workspace_section_item_count = self.tray_menu.with(move |menu| {
+      remove_workspace_section(menu, stale_item_count);
+      insert_workspace_section(menu, &workspaces)
     })??;
 
     Ok(())
   }
 
-  fn update_badge(&self, label: Option<&str>) -> anyhow::Result<()> {
-    let badged_icon =
-      render_badged_icon(&self.base_icon, label.unwrap_or_default());
+  fn show_workspace_in_badge(
+    &self,
+    workspace_name: Option<&str>,
+  ) -> anyhow::Result<()> {
+    let badged_icon = render_icon_with_workspace_badge(
+      &self.icon_without_badge,
+      workspace_name.unwrap_or_default(),
+    );
 
     self.tray_icon.with(move |tray_icon| {
-      let icon = Self::icon_from_rgba(badged_icon)?;
-      tray_icon.set_icon(Some(icon))?;
+      tray_icon.set_icon(Some(Self::icon_from_rgba(badged_icon)?))?;
       anyhow::Ok(())
     })??;
 
@@ -325,7 +319,7 @@ impl SystemTray {
     config_path: &Path,
     config_reload_tx: &mpsc::UnboundedSender<()>,
     exit_tx: &mpsc::UnboundedSender<()>,
-    command_tx: &mpsc::UnboundedSender<TrayCommand>,
+    menu_request_tx: &mpsc::UnboundedSender<TrayMenuRequest>,
     // LINT: `animations_enabled` is only used on Windows.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     animations_enabled: &Arc<Mutex<bool>>,
@@ -335,28 +329,28 @@ impl SystemTray {
 
     match menu_id {
       TrayMenuId::FocusWorkspace(name) => {
-        command_tx.send(TrayCommand {
-          commands: vec![focus_command(None, Some(name.clone()))],
+        menu_request_tx.send(TrayMenuRequest {
+          commands: vec![focus_workspace(name)],
           subject_container_id: None,
         })?;
         Ok(())
       }
       TrayMenuId::FocusWindow(window_id) => {
-        command_tx.send(TrayCommand {
-          commands: vec![focus_command(Some(*window_id), None)],
+        menu_request_tx.send(TrayMenuRequest {
+          commands: vec![focus_window(*window_id)],
           subject_container_id: None,
         })?;
         Ok(())
       }
       TrayMenuId::ToggleWorkspaceTilingDirection(workspace_id) => {
-        command_tx.send(TrayCommand {
+        menu_request_tx.send(TrayMenuRequest {
           commands: vec![InvokeCommand::ToggleTilingDirection],
           subject_container_id: Some(*workspace_id),
         })?;
         Ok(())
       }
       TrayMenuId::ToggleWorkspaceAccordion(workspace_id) => {
-        command_tx.send(TrayCommand {
+        menu_request_tx.send(TrayMenuRequest {
           commands: vec![InvokeCommand::ToggleAccordion],
           subject_container_id: Some(*workspace_id),
         })?;
@@ -408,27 +402,6 @@ impl SystemTray {
       }
     }
   }
-}
-
-/// Builds a `focus` command targeting either a container or a workspace.
-fn focus_command(
-  container_id: Option<Uuid>,
-  workspace: Option<String>,
-) -> InvokeCommand {
-  InvokeCommand::Focus(InvokeFocusCommand {
-    direction: None,
-    container_id,
-    workspace_in_direction: None,
-    workspace,
-    monitor: None,
-    next_active_workspace: false,
-    prev_active_workspace: false,
-    next_workspace: false,
-    prev_workspace: false,
-    next_active_workspace_on_monitor: false,
-    prev_active_workspace_on_monitor: false,
-    recent_workspace: false,
-  })
 }
 
 /// Creates a new [`AutoLaunch`] instance for managing auto-launch at

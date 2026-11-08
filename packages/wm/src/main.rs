@@ -33,7 +33,7 @@ use wm_platform::{
 
 use crate::{
   ipc_server::IpcServer,
-  session::{restore_session, SessionStore},
+  session::{restore_window_arrangement, WindowArrangementFile},
   sys_tray::SystemTray, user_config::UserConfig,
   wm::WindowManager,
 };
@@ -44,6 +44,7 @@ mod ipc_server;
 mod models;
 mod pending_sync;
 mod session;
+mod wm_command_builders;
 mod sys_tray;
 mod tray_badge;
 mod tray_workspace_menu;
@@ -186,10 +187,16 @@ async fn start_wm(
     dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
   }
 
-  let mut session_store = SessionStore::new(&config.path);
-  if let Some(session) = session_store.load() {
-    if let Err(err) = restore_session(&session, &mut wm, &mut config) {
-      tracing::warn!("Failed to restore session: {:?}", err);
+  let mut window_arrangement_file =
+    WindowArrangementFile::next_to_config(&config.path);
+
+  if let Some(saved_arrangement) =
+    window_arrangement_file.read_saved_arrangement()
+  {
+    if let Err(err) =
+      restore_window_arrangement(&saved_arrangement, &mut wm, &mut config)
+    {
+      tracing::warn!("Failed to restore window arrangement: {:?}", err);
     }
   }
 
@@ -297,11 +304,11 @@ async fn start_wm(
 
         Ok(())
       },
-      Some(tray_command) = tray.command_rx.recv() => {
+      Some(menu_request) = tray.menu_request_rx.recv() => {
         tray_workspaces_outdated = true;
         wm.process_commands(
-          &tray_command.commands,
-          tray_command.subject_container_id,
+          &menu_request.commands,
+          menu_request.subject_container_id,
           &mut config,
         ).map(|_| ())
       },
@@ -316,11 +323,13 @@ async fn start_wm(
           })
           .try_collect()
           .and_then(|workspaces: Vec<WorkspaceDto>| {
-            if let Err(err) = session_store.save(&workspaces) {
-              tracing::warn!("Failed to save session: {:?}", err);
+            if let Err(err) =
+              window_arrangement_file.save_if_changed(&workspaces)
+            {
+              tracing::warn!("Failed to save window arrangement: {:?}", err);
             }
 
-            tray.update_workspaces(workspaces)
+            tray.show_workspaces(workspaces)
           })
       },
       Some(()) = tray.config_reload_rx.recv() => {

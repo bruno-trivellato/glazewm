@@ -6,31 +6,32 @@ use crate::{
   wm_state::WmState,
 };
 
-/// Toggles the accordion layout of the given workspace, or of the
-/// direction container holding the given tiling window.
 pub fn toggle_accordion(
   container: Container,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let workspace = container.workspace().context("No workspace.")?;
 
-  let direction_container: DirectionContainer = match container {
-    Container::Workspace(workspace) => workspace.into(),
-    Container::TilingWindow(tiling_window) => {
-      match tiling_window.direction_container() {
-        Some(direction_container) => direction_container,
-        None => return Ok(()),
-      }
-    }
-    _ => return Ok(()),
+  let Some(container_to_toggle) = accordion_candidate_for(container) else {
+    return Ok(());
   };
 
-  direction_container.set_accordion(!direction_container.is_accordion());
+  container_to_toggle.set_accordion(!container_to_toggle.is_accordion());
 
   state
     .pending_sync
-    .queue_container_to_redraw(direction_container)
+    .queue_container_to_redraw(container_to_toggle)
     .queue_workspace_to_reorder(workspace);
 
   Ok(())
+}
+
+fn accordion_candidate_for(container: Container) -> Option<DirectionContainer> {
+  match container {
+    Container::Workspace(workspace) => Some(workspace.into()),
+    Container::TilingWindow(tiling_window) => {
+      tiling_window.direction_container()
+    }
+    _ => None,
+  }
 }
