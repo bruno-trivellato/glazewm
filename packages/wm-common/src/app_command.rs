@@ -231,6 +231,7 @@ pub enum InvokeCommand {
   ToggleMinimized,
   ToggleTiling,
   ToggleTilingDirection,
+  ToggleAccordion,
   SetTilingDirection {
     #[clap(required = true)]
     tiling_direction: TilingDirection,

@@ -13,7 +13,9 @@ use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
   models::{Container, WindowContainer},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
+  },
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -27,6 +29,7 @@ pub fn platform_sync(
 
   if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)?;
+    queue_accordion_ancestors_to_redraw(&focused_container, state);
   }
 
   if !state.pending_sync.containers_to_redraw().is_empty()
@@ -76,6 +79,21 @@ pub fn platform_sync(
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Accordion children are offset around the focused child, so they need
+/// a redraw whenever focus moves within them.
+fn queue_accordion_ancestors_to_redraw(
+  focused_container: &Container,
+  state: &mut WmState,
+) {
+  for accordion in focused_container
+    .ancestors()
+    .filter_map(|ancestor| ancestor.as_direction_container().ok())
+    .filter(TilingDirectionGetters::is_accordion)
+  {
+    state.pending_sync.queue_container_to_redraw(accordion);
+  }
 }
 
 fn sync_focus(

@@ -21,4 +21,6 @@ pub struct SplitContainerDto {
   pub x: i32,
   pub y: i32,
   pub tiling_direction: TilingDirection,
+  #[serde(default)]
+  pub is_accordion: bool,
 }

@@ -34,6 +34,7 @@ struct SplitContainerInner {
   child_focus_order: VecDeque<Uuid>,
   tiling_size: f32,
   tiling_direction: TilingDirection,
+  is_accordion: bool,
   gaps_config: GapsConfig,
 }
 
@@ -49,6 +50,7 @@ impl SplitContainer {
       child_focus_order: VecDeque::new(),
       tiling_size: 1.0,
       tiling_direction,
+      is_accordion: false,
       gaps_config,
     };
 
@@ -71,6 +73,7 @@ impl SplitContainer {
       has_focus: self.has_focus(None),
       tiling_size: self.tiling_size(),
       tiling_direction: self.tiling_direction(),
+      is_accordion: self.is_accordion(),
       width: rect.width(),
       height: rect.height(),
       x: rect.x(),

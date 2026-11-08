@@ -65,7 +65,13 @@ fn main() {
   let version_parts = env!("VERSION_NUMBER")
     .split('.')
     .take(3)
-    .map(|part| part.parse().unwrap_or(0))
+    .map(|part| {
+      part
+        .split(|char: char| !char.is_ascii_digit())
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0)
+    })
     .collect::<Vec<u16>>();
 
   let [major, minor, patch] =

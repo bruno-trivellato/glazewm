@@ -20,7 +20,9 @@ use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
   layer::SubscriberExt,
 };
-use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
+use wm_common::{
+  AppCommand, ContainerDto, InvokeCommand, Verbosity, WmEvent, WorkspaceDto,
+};
 #[cfg(target_os = "macos")]
 use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
@@ -30,7 +32,9 @@ use wm_platform::{
 };
 
 use crate::{
-  ipc_server::IpcServer, sys_tray::SystemTray, user_config::UserConfig,
+  ipc_server::IpcServer,
+  session::{restore_session, SessionStore},
+  sys_tray::SystemTray, user_config::UserConfig,
   wm::WindowManager,
 };
 
@@ -39,7 +43,10 @@ mod events;
 mod ipc_server;
 mod models;
 mod pending_sync;
+mod session;
 mod sys_tray;
+mod tray_badge;
+mod tray_workspace_menu;
 mod traits;
 mod user_config;
 mod wm;
@@ -179,10 +186,21 @@ async fn start_wm(
     dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
   }
 
+  let mut session_store = SessionStore::new(&config.path);
+  if let Some(session) = session_store.load() {
+    if let Err(err) = restore_session(&session, &mut wm, &mut config) {
+      tracing::warn!("Failed to restore session: {:?}", err);
+    }
+  }
+
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+  let mut tray_refresh_interval =
+    tokio::time::interval(Duration::from_millis(300));
+  let mut tray_workspaces_outdated = true;
 
   loop {
     let res = tokio::select! {
@@ -212,6 +230,7 @@ async fn start_wm(
       },
       Some(event) = keybinding_listener.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
+        tray_workspaces_outdated = true;
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       }
       _ = cleanup_interval.tick() => {
@@ -242,6 +261,7 @@ async fn start_wm(
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
+        tray_workspaces_outdated = true;
 
         // Disable mouse listener when the WM is paused.
         if let WmEvent::PauseChanged { is_paused } = wm_event {
@@ -277,6 +297,32 @@ async fn start_wm(
 
         Ok(())
       },
+      Some(tray_command) = tray.command_rx.recv() => {
+        tray_workspaces_outdated = true;
+        wm.process_commands(
+          &tray_command.commands,
+          tray_command.subject_container_id,
+          &mut config,
+        ).map(|_| ())
+      },
+      _ = tray_refresh_interval.tick(), if tray_workspaces_outdated => {
+        tray_workspaces_outdated = false;
+        wm.state
+          .sorted_workspaces(&config)
+          .into_iter()
+          .map(|workspace| match workspace.to_dto()? {
+            ContainerDto::Workspace(workspace_dto) => Ok(workspace_dto),
+            _ => anyhow::bail!("Expected a workspace DTO."),
+          })
+          .try_collect()
+          .and_then(|workspaces: Vec<WorkspaceDto>| {
+            if let Err(err) = session_store.save(&workspaces) {
+              tracing::warn!("Failed to save session: {:?}", err);
+            }
+
+            tray.update_workspaces(workspaces)
+          })
+      },
       Some(()) = tray.config_reload_rx.recv() => {
         wm.process_commands(
           &vec![InvokeCommand::WmReloadConfig],
@@ -307,7 +353,10 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .join(".glzr/glazewm/");
 
   let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+
+  let activity_writer =
+    tracing_appender::rolling::daily(&error_log_dir, "glazewm.log");
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -319,6 +368,11 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       // Output to error log file.
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::ERROR)),
+    )
+    .with(
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(activity_writer.with_max_level(verbosity.level())),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;

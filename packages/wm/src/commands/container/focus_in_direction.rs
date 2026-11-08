@@ -29,7 +29,10 @@ pub fn focus_in_direction(
           floating_focus_target(origin_container, direction)
         }
         WindowState::Fullscreen(_) => {
-          workspace_focus_target(origin_container, direction, state)?
+          fullscreen_focus_target(origin_container, direction).map_or_else(
+            || workspace_focus_target(origin_container, direction, state),
+            |container| Ok(Some(container)),
+          )?
         }
         _ => None,
       }
@@ -77,6 +80,48 @@ fn floating_focus_target(
   }
 }
 
+/// Gets the previous (left/up) or next (right/down) visible window of the
+/// workspace, in tree order, when navigating from a fullscreen window.
+fn fullscreen_focus_target(
+  origin_container: &Container,
+  direction: &Direction,
+) -> Option<Container> {
+  let workspace: Container = origin_container.workspace()?.into();
+
+  let mut windows = Vec::new();
+  collect_visible_windows(&workspace, &mut windows);
+
+  let origin_index = windows
+    .iter()
+    .position(|window| window.id() == origin_container.id())?;
+
+  match direction {
+    Direction::Left | Direction::Up => {
+      origin_index.checked_sub(1).map(|index| windows[index].clone())
+    }
+    Direction::Right | Direction::Down => windows.get(origin_index + 1).cloned(),
+  }
+}
+
+fn collect_visible_windows(container: &Container, windows: &mut Vec<Container>) {
+  for child in container.children() {
+    match child.as_window_container() {
+      Ok(window) => {
+        if window.state() != WindowState::Minimized {
+          windows.push(child);
+        }
+      }
+      Err(_) => collect_visible_windows(&child, windows),
+    }
+  }
+}
+
+fn is_fullscreen(container: &Container) -> bool {
+  container.as_non_tiling_window().is_some_and(|window| {
+    matches!(window.state(), WindowState::Fullscreen(_))
+  })
+}
+
 /// Gets a focus target within the current workspace. Traverse upwards from
 /// the origin container to find an adjacent container that can be focused.
 fn tiling_focus_target(
@@ -100,24 +145,26 @@ fn tiling_focus_target(
       continue;
     }
 
-    // Get the next/prev tiling sibling depending on the tiling direction.
+    // Get the next/prev tiling or fullscreen sibling depending on the
+    // tiling direction.
+    let is_focus_candidate =
+      |c: &Container| c.as_tiling_container().is_ok() || is_fullscreen(c);
+
     let focus_target = match direction {
       Direction::Up | Direction::Left => origin_or_ancestor
         .prev_siblings()
-        .find_map(|c| c.as_tiling_container().ok()),
-      _ => origin_or_ancestor
-        .next_siblings()
-        .find_map(|c| c.as_tiling_container().ok()),
+        .find(is_focus_candidate),
+      _ => origin_or_ancestor.next_siblings().find(is_focus_candidate),
     };
 
     match focus_target {
       Some(target) => {
         // Return once a suitable focus target is found.
-        return Ok(match target {
-          TilingContainer::TilingWindow(_) => Some(target.into()),
-          TilingContainer::Split(split) => split
+        return Ok(match target.as_tiling_container() {
+          Ok(TilingContainer::Split(split)) => split
             .descendant_in_direction(&direction.inverse())
             .map(Into::into),
+          Ok(TilingContainer::TilingWindow(_)) | Err(_) => Some(target),
         });
       }
       None => origin_or_ancestor = parent.into(),
