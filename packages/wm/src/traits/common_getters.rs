@@ -115,17 +115,17 @@ pub trait CommonGetters {
 
   /// Children in order of last focus.
   fn child_focus_order(&self) -> Box<dyn Iterator<Item = Container> + '_> {
-    let child_focus_order = self.borrow_child_focus_order();
+    let child_ids = self
+      .borrow_child_focus_order()
+      .iter()
+      .copied()
+      .collect::<Vec<_>>();
 
-    Box::new(std::iter::from_fn(move || {
-      for child_id in child_focus_order.iter() {
-        if let Some(child) = self.child_by_id(child_id) {
-          return Some(child);
-        }
-      }
-
-      None
-    }))
+    Box::new(
+      child_ids
+        .into_iter()
+        .filter_map(move |child_id| self.child_by_id(&child_id)),
+    )
   }
 
   /// Leaf nodes (i.e. windows and workspaces) in order of last focus.
