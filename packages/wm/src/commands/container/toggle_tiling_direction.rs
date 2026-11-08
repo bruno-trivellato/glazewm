@@ -28,6 +28,10 @@ pub fn toggle_tiling_direction(
     _ => return Ok(()),
   }?;
 
+  state
+    .pending_sync
+    .queue_container_to_redraw(direction_container.clone());
+
   state.emit_event(WmEvent::TilingDirectionChanged {
     direction_container: direction_container.to_dto()?,
     new_tiling_direction: direction_container.tiling_direction(),
