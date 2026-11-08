@@ -20,7 +20,9 @@ use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
   layer::SubscriberExt,
 };
-use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
+use wm_common::{
+  AppCommand, ContainerDto, InvokeCommand, Verbosity, WmEvent,
+};
 #[cfg(target_os = "macos")]
 use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
@@ -40,6 +42,7 @@ mod ipc_server;
 mod models;
 mod pending_sync;
 mod sys_tray;
+mod tray_workspace_menu;
 mod traits;
 mod user_config;
 mod wm;
@@ -179,6 +182,10 @@ async fn start_wm(
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
 
+  let mut tray_refresh_interval =
+    tokio::time::interval(Duration::from_millis(300));
+  let mut tray_workspaces_outdated = true;
+
   loop {
     let res = tokio::select! {
       _ = signal::ctrl_c() => {
@@ -237,6 +244,7 @@ async fn start_wm(
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
+        tray_workspaces_outdated = true;
 
         // Disable mouse listener when the WM is paused.
         if let WmEvent::PauseChanged { is_paused } = wm_event {
@@ -271,6 +279,25 @@ async fn start_wm(
         }
 
         Ok(())
+      },
+      Some(tray_command) = tray.command_rx.recv() => {
+        wm.process_commands(
+          &tray_command.commands,
+          tray_command.subject_container_id,
+          &mut config,
+        ).map(|_| ())
+      },
+      _ = tray_refresh_interval.tick(), if tray_workspaces_outdated => {
+        tray_workspaces_outdated = false;
+        wm.state
+          .sorted_workspaces(&config)
+          .into_iter()
+          .map(|workspace| match workspace.to_dto()? {
+            ContainerDto::Workspace(workspace_dto) => Ok(workspace_dto),
+            _ => anyhow::bail!("Expected a workspace DTO."),
+          })
+          .try_collect()
+          .and_then(|workspaces| tray.update_workspaces(workspaces))
       },
       Some(()) = tray.config_reload_rx.recv() => {
         wm.process_commands(
