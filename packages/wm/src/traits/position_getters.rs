@@ -185,3 +185,39 @@ macro_rules! impl_position_getters_as_resizable {
     }
   };
 }
+
+#[cfg(test)]
+mod tests {
+  use wm_common::TilingDirection;
+  use wm_platform::Rect;
+
+  use super::{accordion_child_rect, AccordionSlot};
+
+  fn horizontal_accordion_child_span(
+    child_count: usize,
+    child_index: usize,
+    focused_child_index: usize,
+  ) -> (i32, i32) {
+    let rect = accordion_child_rect(
+      &Rect::from_xy(0, 0, 1000, 500),
+      &TilingDirection::Horizontal,
+      &AccordionSlot {
+        child_count,
+        child_index,
+        focused_child_index,
+      },
+    );
+
+    (rect.x(), rect.width())
+  }
+
+  #[test]
+  fn accordion_children_peek_out_around_the_focused_child() {
+    assert_eq!(horizontal_accordion_child_span(1, 0, 0), (0, 1000));
+
+    assert_eq!(horizontal_accordion_child_span(4, 0, 1), (0, 970));
+    assert_eq!(horizontal_accordion_child_span(4, 1, 1), (30, 940));
+    assert_eq!(horizontal_accordion_child_span(4, 2, 1), (60, 940));
+    assert_eq!(horizontal_accordion_child_span(4, 3, 1), (30, 970));
+  }
+}
