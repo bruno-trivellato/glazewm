@@ -332,7 +332,10 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .join(".glzr/glazewm/");
 
   let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+
+  let activity_writer =
+    tracing_appender::rolling::daily(&error_log_dir, "glazewm.log");
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -344,6 +347,11 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       // Output to error log file.
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::ERROR)),
+    )
+    .with(
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(activity_writer.with_max_level(verbosity.level())),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;
