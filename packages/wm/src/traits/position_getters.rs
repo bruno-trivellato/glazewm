@@ -2,43 +2,86 @@ use ambassador::delegatable_trait;
 use wm_common::TilingDirection;
 use wm_platform::Rect;
 
-const ACCORDION_PADDING: i32 = 30;
+use crate::{models::DirectionContainer, traits::CommonGetters};
 
-/// Rect of a child inside an accordion container, following `AeroSpace`'s
-/// accordion layout: children overlap and peek out by a fixed padding.
+const ACCORDION_PEEK_SIZE: i32 = 30;
+
+pub struct AccordionSlot {
+  pub child_count: usize,
+  pub child_index: usize,
+  pub focused_child_index: usize,
+}
+
+struct AccordionInsets {
+  leading: i32,
+  trailing: i32,
+}
+
+impl AccordionSlot {
+  fn insets(&self) -> AccordionInsets {
+    let is_only_child = self.child_count == 1;
+    let is_first_child = self.child_index == 0;
+    let is_last_child = self.child_index + 1 == self.child_count;
+    let is_just_before_focused =
+      self.child_index + 1 == self.focused_child_index;
+    let is_just_after_focused =
+      self.child_index == self.focused_child_index + 1;
+
+    let (leading, trailing) = if is_only_child {
+      (0, 0)
+    } else if is_first_child {
+      (0, ACCORDION_PEEK_SIZE)
+    } else if is_last_child {
+      (ACCORDION_PEEK_SIZE, 0)
+    } else if is_just_before_focused {
+      (0, 2 * ACCORDION_PEEK_SIZE)
+    } else if is_just_after_focused {
+      (2 * ACCORDION_PEEK_SIZE, 0)
+    } else {
+      (ACCORDION_PEEK_SIZE, ACCORDION_PEEK_SIZE)
+    };
+
+    AccordionInsets { leading, trailing }
+  }
+}
+
 #[must_use]
 pub fn accordion_child_rect(
   parent_rect: &Rect,
   tiling_direction: &TilingDirection,
-  child_count: usize,
-  child_index: usize,
-  focused_index: usize,
+  slot: &AccordionSlot,
 ) -> Rect {
-  let last_index = child_count.saturating_sub(1);
-
-  let (leading_padding, trailing_padding) = match child_index {
-    0 if child_count == 1 => (0, 0),
-    0 => (0, ACCORDION_PADDING),
-    index if index == last_index => (ACCORDION_PADDING, 0),
-    index if index + 1 == focused_index => (0, 2 * ACCORDION_PADDING),
-    index if index == focused_index + 1 => (2 * ACCORDION_PADDING, 0),
-    _ => (ACCORDION_PADDING, ACCORDION_PADDING),
-  };
+  let insets = slot.insets();
 
   match tiling_direction {
     TilingDirection::Horizontal => Rect::from_xy(
-      parent_rect.x() + leading_padding,
+      parent_rect.x() + insets.leading,
       parent_rect.y(),
-      parent_rect.width() - leading_padding - trailing_padding,
+      parent_rect.width() - insets.leading - insets.trailing,
       parent_rect.height(),
     ),
     TilingDirection::Vertical => Rect::from_xy(
       parent_rect.x(),
-      parent_rect.y() + leading_padding,
+      parent_rect.y() + insets.leading,
       parent_rect.width(),
-      parent_rect.height() - leading_padding - trailing_padding,
+      parent_rect.height() - insets.leading - insets.trailing,
     ),
   }
+}
+
+#[must_use]
+pub fn last_focused_tiling_child_index(parent: &DirectionContainer) -> usize {
+  let last_focused_tiling_child = parent
+    .child_focus_order()
+    .find_map(|child| child.as_tiling_container().ok());
+
+  last_focused_tiling_child
+    .and_then(|focused_child| {
+      parent
+        .tiling_children()
+        .position(|child| child.id() == focused_child.id())
+    })
+    .unwrap_or(0)
 }
 
 #[delegatable_trait]
@@ -64,22 +107,20 @@ macro_rules! impl_position_getters_as_resizable {
         let parent_rect = parent.to_rect()?;
 
         if parent.is_accordion() {
+          let slot = $crate::traits::AccordionSlot {
+            child_count: self.tiling_siblings().count() + 1,
+            child_index: self
+              .prev_siblings()
+              .filter(|sibling| sibling.as_tiling_container().is_ok())
+              .count(),
+            focused_child_index:
+              $crate::traits::last_focused_tiling_child_index(&parent),
+          };
+
           return Ok($crate::traits::accordion_child_rect(
             &parent_rect,
             &parent.tiling_direction(),
-            self.tiling_siblings().count() + 1,
-            self.prev_siblings()
-              .filter(|sibling| sibling.as_tiling_container().is_ok())
-              .count(),
-            parent
-              .child_focus_order()
-              .find_map(|child| child.as_tiling_container().ok())
-              .and_then(|focused| {
-                parent
-                  .tiling_children()
-                  .position(|child| child.id() == focused.id())
-              })
-              .unwrap_or(0),
+            &slot,
           ));
         }
 
@@ -143,4 +184,40 @@ macro_rules! impl_position_getters_as_resizable {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::TilingDirection;
+  use wm_platform::Rect;
+
+  use super::{accordion_child_rect, AccordionSlot};
+
+  fn horizontal_accordion_child_span(
+    child_count: usize,
+    child_index: usize,
+    focused_child_index: usize,
+  ) -> (i32, i32) {
+    let rect = accordion_child_rect(
+      &Rect::from_xy(0, 0, 1000, 500),
+      &TilingDirection::Horizontal,
+      &AccordionSlot {
+        child_count,
+        child_index,
+        focused_child_index,
+      },
+    );
+
+    (rect.x(), rect.width())
+  }
+
+  #[test]
+  fn accordion_children_peek_out_around_the_focused_child() {
+    assert_eq!(horizontal_accordion_child_span(1, 0, 0), (0, 1000));
+
+    assert_eq!(horizontal_accordion_child_span(4, 0, 1), (0, 970));
+    assert_eq!(horizontal_accordion_child_span(4, 1, 1), (30, 940));
+    assert_eq!(horizontal_accordion_child_span(4, 2, 1), (60, 940));
+    assert_eq!(horizontal_accordion_child_span(4, 3, 1), (30, 970));
+  }
 }

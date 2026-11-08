@@ -7,118 +7,132 @@ use std::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, InvokeCommand, InvokeFocusCommand, InvokeMoveCommand,
-  TilingDirection, WindowDto, WorkspaceDto,
+  ContainerDto, InvokeCommand, TilingDirection, WindowDto, WorkspaceDto,
 };
 
 use crate::{
   traits::{CommonGetters, TilingDirectionGetters},
   user_config::UserConfig,
   wm::WindowManager,
+  wm_command_builders::{focus_workspace, move_to_workspace},
 };
 
-const SESSION_FILE_NAME: &str = "session.json";
+const ARRANGEMENT_FILE_NAME: &str = "session.json";
 
-/// Snapshot of which windows live in which workspace, and each
-/// workspace's layout.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Session {
+pub struct WindowArrangementSnapshot {
   focused_workspace: Option<String>,
-  workspaces: Vec<SessionWorkspace>,
+  workspaces: Vec<WorkspaceSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionWorkspace {
+struct WorkspaceSnapshot {
   name: String,
   tiling_direction: TilingDirection,
   is_accordion: bool,
-  windows: Vec<SessionWindow>,
+  #[serde(rename = "windows")]
+  windows_in_tree_order: Vec<WindowSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionWindow {
+struct WindowSnapshot {
   handle: isize,
   process_name: String,
   class_name: String,
   title: String,
 }
 
-/// Persists the session next to the user config, skipping unchanged
-/// snapshots.
-pub struct SessionStore {
-  path: PathBuf,
-  last_saved: Option<Session>,
+pub struct WindowArrangementFile {
+  file_path: PathBuf,
+  last_written_snapshot: Option<WindowArrangementSnapshot>,
 }
 
-impl SessionStore {
-  pub fn new(config_path: &Path) -> Self {
-    let path = config_path
-      .parent()
-      .unwrap_or_else(|| Path::new("."))
-      .join(SESSION_FILE_NAME);
+impl WindowArrangementFile {
+  pub fn next_to_config(config_path: &Path) -> Self {
+    let config_directory =
+      config_path.parent().unwrap_or_else(|| Path::new("."));
 
     Self {
-      path,
-      last_saved: None,
+      file_path: config_directory.join(ARRANGEMENT_FILE_NAME),
+      last_written_snapshot: None,
     }
   }
 
-  pub fn load(&self) -> Option<Session> {
-    let contents = fs::read_to_string(&self.path).ok()?;
+  pub fn read_saved_arrangement(&self) -> Option<WindowArrangementSnapshot> {
+    let contents = fs::read_to_string(&self.file_path).ok()?;
 
     serde_json::from_str(&contents)
-      .inspect_err(|err| tracing::warn!("Ignoring invalid session: {err}"))
+      .inspect_err(|err| {
+        tracing::warn!("Ignoring unreadable window arrangement: {err}");
+      })
       .ok()
   }
 
-  pub fn save(&mut self, workspaces: &[WorkspaceDto]) -> anyhow::Result<()> {
-    let session = Session::from_workspaces(workspaces);
+  pub fn save_if_changed(
+    &mut self,
+    workspaces: &[WorkspaceDto],
+  ) -> anyhow::Result<()> {
+    let snapshot = WindowArrangementSnapshot::of(workspaces);
 
-    if session.workspaces.is_empty()
-      || self.last_saved.as_ref() == Some(&session)
-    {
+    let has_nothing_to_save = snapshot.workspaces.is_empty();
+    let is_already_saved =
+      self.last_written_snapshot.as_ref() == Some(&snapshot);
+
+    if has_nothing_to_save || is_already_saved {
       return Ok(());
     }
 
-    let temp_path = self.path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_string_pretty(&session)?)?;
-    fs::rename(&temp_path, &self.path)?;
+    let partially_written_path = self.file_path.with_extension("json.tmp");
+    fs::write(
+      &partially_written_path,
+      serde_json::to_string_pretty(&snapshot)?,
+    )?;
+    fs::rename(&partially_written_path, &self.file_path)?;
 
-    self.last_saved = Some(session);
+    self.last_written_snapshot = Some(snapshot);
     Ok(())
   }
 }
 
-impl Session {
-  fn from_workspaces(workspaces: &[WorkspaceDto]) -> Self {
-    Self {
-      focused_workspace: workspaces
-        .iter()
-        .find(|workspace| workspace.has_focus)
-        .map(|workspace| workspace.name.clone()),
-      workspaces: workspaces
-        .iter()
-        .map(|workspace| {
-          let mut windows = Vec::new();
-          collect_windows(&workspace.children, &mut windows);
+impl WindowArrangementSnapshot {
+  fn of(workspaces: &[WorkspaceDto]) -> Self {
+    let focused_workspace = workspaces
+      .iter()
+      .find(|workspace| workspace.has_focus)
+      .map(|workspace| workspace.name.clone());
 
-          SessionWorkspace {
-            name: workspace.name.clone(),
-            tiling_direction: workspace.tiling_direction.clone(),
-            is_accordion: workspace.is_accordion,
-            windows: windows.into_iter().map(SessionWindow::from).collect(),
-          }
-        })
+    Self {
+      focused_workspace,
+      workspaces: workspaces.iter().map(WorkspaceSnapshot::of).collect(),
+    }
+  }
+}
+
+impl WorkspaceSnapshot {
+  fn of(workspace: &WorkspaceDto) -> Self {
+    let mut windows_in_tree_order = Vec::new();
+    collect_windows_in_tree_order(
+      &workspace.children,
+      &mut windows_in_tree_order,
+    );
+
+    Self {
+      name: workspace.name.clone(),
+      tiling_direction: workspace.tiling_direction.clone(),
+      is_accordion: workspace.is_accordion,
+      windows_in_tree_order: windows_in_tree_order
+        .into_iter()
+        .map(WindowSnapshot::of)
         .collect(),
     }
   }
 }
 
-impl From<&WindowDto> for SessionWindow {
-  fn from(window: &WindowDto) -> Self {
+impl WindowSnapshot {
+  fn of(window: &WindowDto) -> Self {
     Self {
       handle: window.handle,
       process_name: window.process_name.clone(),
@@ -126,16 +140,24 @@ impl From<&WindowDto> for SessionWindow {
       title: window.title.clone(),
     }
   }
+
+  fn has_same_identity_as(&self, window: &WindowDto) -> bool {
+    window.process_name == self.process_name
+      && window.class_name == self.class_name
+      && window.title == self.title
+  }
 }
 
-fn collect_windows<'a>(
+fn collect_windows_in_tree_order<'a>(
   children: &'a [ContainerDto],
   windows: &mut Vec<&'a WindowDto>,
 ) {
   for child in children {
     match child {
       ContainerDto::Window(window) => windows.push(window),
-      ContainerDto::Split(split) => collect_windows(&split.children, windows),
+      ContainerDto::Split(split) => {
+        collect_windows_in_tree_order(&split.children, windows);
+      }
       ContainerDto::Root(_)
       | ContainerDto::Monitor(_)
       | ContainerDto::Workspace(_) => {}
@@ -143,60 +165,31 @@ fn collect_windows<'a>(
   }
 }
 
-/// Moves managed windows back to their saved workspaces and reapplies
-/// each workspace's layout.
-///
-/// Windows are matched by handle first (survives WM restarts), then by
-/// process, class and title (survives app restarts with stable titles).
-pub fn restore_session(
-  session: &Session,
+pub fn restore_window_arrangement(
+  snapshot: &WindowArrangementSnapshot,
   wm: &mut WindowManager,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
-  let managed_windows = managed_window_dtos(wm)?;
-  let configured_workspaces = config
-    .value
+  let restorable_workspaces = snapshot
     .workspaces
     .iter()
-    .map(|workspace| workspace.name.clone())
-    .collect::<HashSet<_>>();
+    .filter(|workspace| is_configured_workspace(&workspace.name, config))
+    .collect::<Vec<_>>();
 
-  let mut claimed_window_ids = HashSet::new();
+  let restored_window_count = move_windows_back_to_saved_workspaces(
+    &restorable_workspaces,
+    wm,
+    config,
+  )?;
 
-  for saved_workspace in &session.workspaces {
-    if !configured_workspaces.contains(&saved_workspace.name) {
-      continue;
-    }
-
-    for saved_window in &saved_workspace.windows {
-      let Some(window_id) = find_matching_window(
-        saved_window,
-        &managed_windows,
-        &claimed_window_ids,
-      ) else {
-        continue;
-      };
-
-      claimed_window_ids.insert(window_id);
-
-      if let Err(err) = wm.process_commands(
-        &vec![move_to_workspace_command(&saved_workspace.name)],
-        Some(window_id),
-        config,
-      ) {
-        tracing::warn!("Failed to restore window to workspace: {err}");
-      }
-    }
+  for saved_workspace in &restorable_workspaces {
+    reapply_saved_workspace_layout(saved_workspace, wm, config);
   }
 
-  for saved_workspace in &session.workspaces {
-    restore_workspace_layout(saved_workspace, wm, config);
-  }
-
-  if let Some(focused_workspace) = &session.focused_workspace {
-    if configured_workspaces.contains(focused_workspace) {
+  if let Some(focused_workspace) = &snapshot.focused_workspace {
+    if is_configured_workspace(focused_workspace, config) {
       wm.process_commands(
-        &vec![focus_workspace_command(focused_workspace)],
+        &vec![focus_workspace(focused_workspace)],
         None,
         config,
       )?;
@@ -204,52 +197,100 @@ pub fn restore_session(
   }
 
   tracing::info!(
-    "Restored {} windows from the saved session.",
-    claimed_window_ids.len()
+    "Restored {restored_window_count} windows from the saved arrangement."
   );
 
   Ok(())
 }
 
-fn managed_window_dtos(
-  wm: &WindowManager,
-) -> anyhow::Result<Vec<(Uuid, WindowDto)>> {
-  let mut windows = Vec::new();
+fn is_configured_workspace(name: &str, config: &UserConfig) -> bool {
+  config
+    .value
+    .workspaces
+    .iter()
+    .any(|workspace| workspace.name == name)
+}
 
-  for window in wm.state.windows() {
-    if let ContainerDto::Window(window_dto) = window.to_dto()? {
-      windows.push((window_dto.id, window_dto));
+fn move_windows_back_to_saved_workspaces(
+  saved_workspaces: &[&WorkspaceSnapshot],
+  wm: &mut WindowManager,
+  config: &mut UserConfig,
+) -> anyhow::Result<usize> {
+  let open_windows = open_window_dtos(wm)?;
+  let mut already_placed_window_ids = HashSet::new();
+
+  for saved_workspace in saved_workspaces {
+    for saved_window in &saved_workspace.windows_in_tree_order {
+      let unplaced_open_windows = open_windows
+        .iter()
+        .filter(|window| !already_placed_window_ids.contains(&window.id))
+        .collect::<Vec<_>>();
+
+      let matching_window_id =
+        find_window_still_open_with_same_handle(
+          saved_window,
+          &unplaced_open_windows,
+        )
+        .or_else(|| {
+          find_window_reopened_with_same_identity(
+            saved_window,
+            &unplaced_open_windows,
+          )
+        });
+
+      let Some(window_id) = matching_window_id else {
+        continue;
+      };
+
+      already_placed_window_ids.insert(window_id);
+
+      if let Err(err) = wm.process_commands(
+        &vec![move_to_workspace(&saved_workspace.name)],
+        Some(window_id),
+        config,
+      ) {
+        tracing::warn!("Failed to move window back to its workspace: {err}");
+      }
     }
   }
 
-  Ok(windows)
+  Ok(already_placed_window_ids.len())
 }
 
-fn find_matching_window(
-  saved_window: &SessionWindow,
-  managed_windows: &[(Uuid, WindowDto)],
-  claimed_window_ids: &HashSet<Uuid>,
+fn open_window_dtos(wm: &WindowManager) -> anyhow::Result<Vec<WindowDto>> {
+  let mut window_dtos = Vec::new();
+
+  for window in wm.state.windows() {
+    if let ContainerDto::Window(window_dto) = window.to_dto()? {
+      window_dtos.push(window_dto);
+    }
+  }
+
+  Ok(window_dtos)
+}
+
+fn find_window_still_open_with_same_handle(
+  saved_window: &WindowSnapshot,
+  candidates: &[&WindowDto],
 ) -> Option<Uuid> {
-  let unclaimed = || {
-    managed_windows
-      .iter()
-      .filter(|(id, _)| !claimed_window_ids.contains(id))
-  };
-
-  unclaimed()
-    .find(|(_, window)| window.handle == saved_window.handle)
-    .or_else(|| {
-      unclaimed().find(|(_, window)| {
-        window.process_name == saved_window.process_name
-          && window.class_name == saved_window.class_name
-          && window.title == saved_window.title
-      })
-    })
-    .map(|(id, _)| *id)
+  candidates
+    .iter()
+    .find(|window| window.handle == saved_window.handle)
+    .map(|window| window.id)
 }
 
-fn restore_workspace_layout(
-  saved_workspace: &SessionWorkspace,
+fn find_window_reopened_with_same_identity(
+  saved_window: &WindowSnapshot,
+  candidates: &[&WindowDto],
+) -> Option<Uuid> {
+  candidates
+    .iter()
+    .find(|window| saved_window.has_same_identity_as(window))
+    .map(|window| window.id)
+}
+
+fn reapply_saved_workspace_layout(
+  saved_workspace: &WorkspaceSnapshot,
   wm: &mut WindowManager,
   config: &mut UserConfig,
 ) {
@@ -262,57 +303,25 @@ fn restore_workspace_layout(
     return;
   };
 
-  let mut commands = Vec::new();
+  let mut layout_commands = Vec::new();
 
   if workspace.tiling_direction() != saved_workspace.tiling_direction {
-    commands.push(InvokeCommand::SetTilingDirection {
+    layout_commands.push(InvokeCommand::SetTilingDirection {
       tiling_direction: saved_workspace.tiling_direction.clone(),
     });
   }
 
   if workspace.is_accordion() != saved_workspace.is_accordion {
-    commands.push(InvokeCommand::ToggleAccordion);
+    layout_commands.push(InvokeCommand::ToggleAccordion);
   }
 
-  if commands.is_empty() {
+  if layout_commands.is_empty() {
     return;
   }
 
   if let Err(err) =
-    wm.process_commands(&commands, Some(workspace.id()), config)
+    wm.process_commands(&layout_commands, Some(workspace.id()), config)
   {
-    tracing::warn!("Failed to restore workspace layout: {err}");
+    tracing::warn!("Failed to reapply workspace layout: {err}");
   }
-}
-
-fn move_to_workspace_command(workspace: &str) -> InvokeCommand {
-  InvokeCommand::Move(InvokeMoveCommand {
-    direction: None,
-    workspace_in_direction: None,
-    workspace: Some(workspace.to_string()),
-    next_active_workspace: false,
-    prev_active_workspace: false,
-    next_workspace: false,
-    prev_workspace: false,
-    next_active_workspace_on_monitor: false,
-    prev_active_workspace_on_monitor: false,
-    recent_workspace: false,
-  })
-}
-
-fn focus_workspace_command(workspace: &str) -> InvokeCommand {
-  InvokeCommand::Focus(InvokeFocusCommand {
-    direction: None,
-    container_id: None,
-    workspace_in_direction: None,
-    workspace: Some(workspace.to_string()),
-    monitor: None,
-    next_active_workspace: false,
-    prev_active_workspace: false,
-    next_workspace: false,
-    prev_workspace: false,
-    next_active_workspace_on_monitor: false,
-    prev_active_workspace_on_monitor: false,
-    recent_workspace: false,
-  })
 }

@@ -375,3 +375,49 @@ macro_rules! impl_common_getters {
     }
   };
 }
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{FullscreenStateConfig, WindowState};
+
+  use super::CommonGetters;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{NonTilingWindow, TilingWindow, Workspace},
+  };
+
+  #[test]
+  fn child_focus_order_yields_each_child_once_then_ends() {
+    let first_tiling_window = TilingWindow::mock().call();
+    let second_tiling_window = TilingWindow::mock().call();
+    let fullscreen_window = NonTilingWindow::mock()
+      .state(WindowState::Fullscreen(FullscreenStateConfig::default()))
+      .call();
+
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![
+        first_tiling_window.into(),
+        second_tiling_window.into(),
+      ])
+      .non_tiling_windows(vec![fullscreen_window.clone()])
+      .call();
+
+    set_focused_descendant(&fullscreen_window.clone().into(), None);
+
+    let more_items_than_children_would_allow = 10;
+    let focus_order = workspace
+      .child_focus_order()
+      .take(more_items_than_children_would_allow)
+      .map(|child| child.id())
+      .collect::<Vec<_>>();
+
+    assert_eq!(focus_order.len(), 3);
+    assert_eq!(focus_order[0], fullscreen_window.id());
+
+    let last_focused_tiling_child = workspace
+      .child_focus_order()
+      .find_map(|child| child.as_tiling_container().ok());
+
+    assert!(last_focused_tiling_child.is_some());
+  }
+}

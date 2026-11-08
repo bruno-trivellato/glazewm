@@ -1,5 +1,5 @@
 use tray_icon::menu::{
-  IsMenuItem, MenuItem, PredefinedMenuItem, Submenu,
+  IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
 };
 use wm_common::{
   ContainerDto, TilingDirection, WindowDto, WindowState, WorkspaceDto,
@@ -10,11 +10,29 @@ use crate::sys_tray::TrayMenuId;
 const MAX_TITLE_CHARS: usize = 48;
 const NESTING_INDENT: &str = "    ";
 
-/// Builds one tray submenu per workspace, listing its layout and windows.
-pub fn build_workspace_submenus(
+pub fn remove_workspace_section(menu: &Menu, section_item_count: usize) {
+  for _ in 0..section_item_count {
+    menu.remove_at(0);
+  }
+}
+
+pub fn insert_workspace_section(
+  menu: &Menu,
   workspaces: &[WorkspaceDto],
-) -> anyhow::Result<Vec<Submenu>> {
-  workspaces.iter().map(build_workspace_submenu).collect()
+) -> anyhow::Result<usize> {
+  if workspaces.is_empty() {
+    return Ok(0);
+  }
+
+  for (position, workspace) in workspaces.iter().enumerate() {
+    menu.insert(&build_workspace_submenu(workspace)?, position)?;
+  }
+
+  let separator_position = workspaces.len();
+  menu.insert(&PredefinedMenuItem::separator(), separator_position)?;
+
+  let inserted_item_count = workspaces.len() + 1;
+  Ok(inserted_item_count)
 }
 
 fn build_workspace_submenu(
