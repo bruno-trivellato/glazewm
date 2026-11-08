@@ -42,6 +42,7 @@ mod ipc_server;
 mod models;
 mod pending_sync;
 mod sys_tray;
+mod tray_badge;
 mod tray_workspace_menu;
 mod traits;
 mod user_config;

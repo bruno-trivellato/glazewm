@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::Context;
 use auto_launch::AutoLaunch;
+use image::RgbaImage;
 use tokio::sync::mpsc;
 use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
@@ -18,7 +19,10 @@ use wm_common::{InvokeCommand, InvokeFocusCommand, WorkspaceDto};
 use wm_platform::DispatcherExtWindows;
 use wm_platform::{Dispatcher, ThreadBound};
 
-use crate::tray_workspace_menu::build_workspace_submenus;
+use crate::{
+  tray_badge::render_badged_icon,
+  tray_workspace_menu::build_workspace_submenus,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TrayMenuId {
@@ -101,9 +105,11 @@ pub struct SystemTray {
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub command_rx: mpsc::UnboundedReceiver<TrayCommand>,
   _icon_thread: Option<std::thread::JoinHandle<()>>,
-  _tray_icon: ThreadBound<TrayIcon>,
+  tray_icon: ThreadBound<TrayIcon>,
   tray_menu: ThreadBound<Menu>,
   workspace_item_count: usize,
+  base_icon: RgbaImage,
+  badge_label: Option<String>,
 }
 
 impl SystemTray {
@@ -175,17 +181,30 @@ impl SystemTray {
       exit_rx,
       command_rx,
       _icon_thread: Some(icon_thread),
-      _tray_icon: tray_icon,
+      tray_icon,
       tray_menu,
       workspace_item_count: 0,
+      base_icon: Self::decode_base_icon()?,
+      badge_label: None,
     })
   }
 
-  /// Replaces the workspace submenus at the top of the tray menu.
+  /// Replaces the workspace submenus at the top of the tray menu, and
+  /// badges the tray icon with the focused workspace.
   pub fn update_workspaces(
     &mut self,
     workspaces: Vec<WorkspaceDto>,
   ) -> anyhow::Result<()> {
+    let focused_workspace_name = workspaces
+      .iter()
+      .find(|workspace| workspace.has_focus)
+      .map(|workspace| workspace.name.clone());
+
+    if focused_workspace_name != self.badge_label {
+      self.update_badge(focused_workspace_name.as_deref())?;
+      self.badge_label = focused_workspace_name;
+    }
+
     let previous_item_count = self.workspace_item_count;
 
     self.workspace_item_count = self.tray_menu.with(move |menu| {
@@ -208,6 +227,34 @@ impl SystemTray {
     })??;
 
     Ok(())
+  }
+
+  fn update_badge(&self, label: Option<&str>) -> anyhow::Result<()> {
+    let badged_icon =
+      render_badged_icon(&self.base_icon, label.unwrap_or_default());
+
+    self.tray_icon.with(move |tray_icon| {
+      let icon = Self::icon_from_rgba(badged_icon)?;
+      tray_icon.set_icon(Some(icon))?;
+      anyhow::Ok(())
+    })??;
+
+    Ok(())
+  }
+
+  fn decode_base_icon() -> anyhow::Result<RgbaImage> {
+    Ok(
+      image::load_from_memory(include_bytes!(
+        "../../../resources/assets/icon.png"
+      ))
+      .context("Failed to to create tray icon image from resource.")?
+      .into_rgba8(),
+    )
+  }
+
+  fn icon_from_rgba(image: RgbaImage) -> anyhow::Result<Icon> {
+    let (width, height) = image.dimensions();
+    Ok(Icon::from_rgba(image.into_raw(), width, height)?)
   }
 
   fn create_tray_icon(
@@ -261,9 +308,7 @@ impl SystemTray {
       &exit_item,
     ])?;
 
-    let icon = Self::load_icon(include_bytes!(
-      "../../../resources/assets/icon.png"
-    ))?;
+    let icon = Self::icon_from_rgba(Self::decode_base_icon()?)?;
 
     let tray_icon = TrayIconBuilder::new()
       .with_menu(Box::new(tray_menu.clone()))
@@ -272,24 +317,6 @@ impl SystemTray {
       .build()?;
 
     Ok((tray_icon, tray_menu))
-  }
-
-  fn load_icon(bytes: &[u8]) -> anyhow::Result<Icon> {
-    let (icon_rgba, icon_width, icon_height) = {
-      let image = image::load_from_memory(bytes)
-        .context("Failed to to create tray icon image from resource.")?
-        .into_rgba8();
-
-      let (width, height) = image.dimensions();
-      let rgba = image.into_raw();
-      (rgba, width, height)
-    };
-
-    Ok(tray_icon::Icon::from_rgba(
-      icon_rgba,
-      icon_width,
-      icon_height,
-    )?)
   }
 
   fn handle_menu_event(
