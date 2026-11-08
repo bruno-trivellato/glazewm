@@ -20,6 +20,7 @@ use wm_platform::DispatcherExtWindows;
 use wm_platform::{Dispatcher, ThreadBound};
 
 use crate::{
+  app_version::{version_with_age, version_with_full_date},
   tray_badge::render_icon_with_workspace_badge,
   tray_workspace_menu::{insert_workspace_section, remove_workspace_section},
   wm_command_builders::{focus_window, focus_workspace},
@@ -197,6 +198,10 @@ impl SystemTray {
       .find(|workspace| workspace.has_focus)
       .map(|workspace| workspace.name.clone());
 
+    self.tray_icon.with(|tray_icon| {
+      tray_icon.set_tooltip(Some(version_tooltip()))
+    })??;
+
     if focused_workspace_name != self.badged_workspace_name {
       self.show_workspace_in_badge(focused_workspace_name.as_deref())?;
       self.badged_workspace_name = focused_workspace_name;
@@ -291,6 +296,8 @@ impl SystemTray {
     let exit_item =
       MenuItem::with_id(TrayMenuId::Exit, "Exit", true, None);
 
+    let version_item = MenuItem::new(version_with_full_date(), false, None);
+
     let tray_menu = Menu::new();
     tray_menu.append_items(&[
       &reload_config_item,
@@ -299,6 +306,7 @@ impl SystemTray {
       &toggle_animations_item,
       &run_on_startup_item,
       &PredefinedMenuItem::separator(),
+      &version_item,
       &exit_item,
     ])?;
 
@@ -306,7 +314,7 @@ impl SystemTray {
 
     let tray_icon = TrayIconBuilder::new()
       .with_menu(Box::new(tray_menu.clone()))
-      .with_tooltip(format!("GlazeWM v{}", env!("VERSION_NUMBER")))
+      .with_tooltip(version_tooltip())
       .with_icon(icon)
       .build()?;
 
@@ -402,6 +410,10 @@ impl SystemTray {
       }
     }
   }
+}
+
+fn version_tooltip() -> String {
+  format!("GlazeWM {}", version_with_age(chrono::Utc::now()))
 }
 
 /// Creates a new [`AutoLaunch`] instance for managing auto-launch at

@@ -45,6 +45,7 @@ mod models;
 mod pending_sync;
 mod session;
 mod wm_command_builders;
+mod app_version;
 mod sys_tray;
 mod tray_badge;
 mod tray_workspace_menu;
